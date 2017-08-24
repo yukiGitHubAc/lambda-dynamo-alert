@@ -8,6 +8,8 @@ This script works on AWSLambda.
 
 # How to use
 
+npm install
+
 Zip this repository.
 
 Upload to AWS Lambda.
