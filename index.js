@@ -123,9 +123,10 @@ function getProvisionedWriteCapacity(tableName, Capacity) {
             console.log("Error", err);
         } else {
             let wcu = data.Table.ProvisionedThroughput.WriteCapacityUnits;
-            console.log('getProvisionedWriteCapacity', Capacity, wcu);
-            if (Number(Capacity) > Number(wcu)) {
-                console.log('[INFO]', tableName, ': ProvisionedWriteCapacityUnits is ', wcu, 'ConsumedWriteCapacityUnits is ', Capacity);
+            let writeCapacity = Math.ceil(Number(Capacity));
+            console.log('getProvisionedWriteCapacity: ', tableName, writeCapacity, wcu);
+            if (writeCapacity > Number(wcu)) {
+                console.log('[INFO]', tableName, ': ProvisionedWriteCapacityUnits is ', wcu, 'ConsumedWriteCapacityUnits is ', writeCapacity);
                 postSlack(tableName, 'ProvisionedWriteapacityUnits');
                 return null;
             } else {
@@ -144,9 +145,10 @@ function getProvisionedReadCapacity(tableName, Capacity) {
             console.log("Error", err);
         } else {
             let rcu = data.Table.ProvisionedThroughput.ReadCapacityUnits;
-            console.log('getProvisionedReadCapacity', Capacity, rcu);
-            if (Number(Capacity) > Number(rcu)) {
-                console.log('[INFO]', tableName, ': ProvisionedReadCapacityUnits is ', rcu, 'ConsumedReadCapacityUnits is ', Capacity);
+            let readCapacity = Math.ceil(Number(Capacity));
+            console.log('getProvisionedReadCapacity: ', tableName, readCapacity, rcu);
+            if (readCapacity > Number(rcu)) {
+                console.log('[INFO]', tableName, ': ProvisionedReadCapacityUnits is ', rcu, 'ConsumedReadCapacityUnits is ', readCapacity);
                 postSlack(tableName, 'ProvisionedReadCapacityUnits');
                 return null;
             } else {
