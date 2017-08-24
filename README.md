@@ -1,5 +1,7 @@
 # lambda-dynamo-alert
+
 It is a script for detecting throughput error of DynamoDB.
+
 This script works on AWSLambda.
 
 日本語は[README.jp.me]
