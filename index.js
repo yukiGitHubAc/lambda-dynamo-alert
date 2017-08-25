@@ -1,31 +1,53 @@
 'use strict';
-
 const aws = require('aws-sdk');
 const co = require('co');
 const dynamodb = new aws.DynamoDB({region: REGION});
 const cw = new aws.CloudWatch({region: REGION});
 const slack = require('slack');
 
-
 exports.handler = function (event, context, callback) {
-    co(function *() {
-        return yield getTableList();
-    }).then(targetTableList => {
-        targetTableList.forEach((table, count) => {
-            getConsumedWriteCapacity(table);
-            getConsumedReadCapacity(table);
-            if (count === targetTableList.length) callback();
+    getTableList().then((data) => {
+        console.log('[INFO] table list: ', data);
+        data.forEach((tableName, count) => {
+            let tasks = [
+                getReadCapacity(tableName),
+                getWriteCapacity(tableName)
+            ];
+            Promise.all(tasks).then(e => {
+                if (e[0] !== undefined) {
+                    console.log(e[0]);
+                    if (e.warn) {
+                        console.log(e[0]);
+                        postSlack(e);
+                    }
+                }
+                if (e[1] !== undefined) {
+                    console.log(e[1]);
+                    if (e.warn) {
+                        console.log(e[1]);
+                        postSlack(e);
+                    }
+                }
+            }).catch(err => {
+                console.log(err)
+            });
+
+            if (count === data.length - 1) {
+                console.log('table count: ', count + 1);
+                callback();
+            }
         });
-    }).catch(e => {
-        callback(e);
+    }).catch(err => {
+        console.log(err);
+        callback(err);
     });
 };
 
 
-// ------------------------------------------------------------------------------------
-function getTableList(LastEvaluatedTableName, TableList) {
+function getTableList(LastEvaluatedTableName, tableList) {
     return new Promise((resolve, reject) => {
-        let resList = [];
+        let list = [];
+        if (tableList) list = tableList;
         let params = {Limit: 100};
         if (LastEvaluatedTableName) params['ExclusiveStartTableName'] = LastEvaluatedTableName;
 
@@ -34,109 +56,66 @@ function getTableList(LastEvaluatedTableName, TableList) {
                 console.log('[ERROR] getTableList function error...', err);
                 reject(err);
             } else {
-                console.log('[INFO] getTableList...', data);
                 if (data.LastEvaluatedTableName) {
-                    console.log(data.TableNames);
-                    if (!TableList) {
-                        TableList = data.TableNames;
-                    } else {
-                        TableList = TableList.concat(data.TableNames);
-                    }
-                    getTableList(data.LastEvaluatedTableName, TableList);
+                    list = list.concat(data.TableNames);
+                    resolve(getTableList(data.LastEvaluatedTableName, list));
                 } else {
-                    if (TableList) {
-                        resList = TableList.concat(data.TableNames);
-                    } else {
-                        resList = data.TableNames
-                    }
+                    list = list.concat(data.TableNames);
+                    resolve(list);
                 }
-                resolve(resList);
             }
         });
     });
 }
-// ------------------------------------------------------------------------------------
-function getConsumedWriteCapacity(tableName) {
-    let params = {
-        EndTime: new Date(),
-        StartTime: new Date(+new Date() - (5 * 60 * 1000)),
-        Period: 60,
-        Dimensions: [
-            {
-                Name: 'TableName',
-                Value: tableName
-            },
-        ],
-        MetricName: 'ConsumedWriteCapacityUnits',
-        Namespace: 'AWS/DynamoDB',
-        Statistics: ['Average']
-    };
-    cw.getMetricStatistics(params, function (err, data) {
-        if (err) {
-            console.log("Error", err);
-        } else {
-            if (data.Datapoints.length > 0) {
-                let res = data.Datapoints[data.Datapoints.length - 1].Average;
-                getProvisionedWriteCapacity(tableName, res);
+
+
+function getReadCapacity(tableName) {
+    return new Promise((resolve, reject) => {
+        let params = {
+            EndTime: new Date(),
+            StartTime: new Date(+new Date() - (6 * 60 * 1000)),
+            Period: 60,
+            Dimensions: [
+                {
+                    Name: 'TableName',
+                    Value: tableName
+                },
+            ],
+            MetricName: 'ConsumedReadCapacityUnits',
+            Namespace: 'AWS/DynamoDB',
+            Statistics: ['Sum']
+        };
+        cw.getMetricStatistics(params, function (err, data) {
+            if (err) {
+                console.log("Error", err);
+                reject(err);
             } else {
-                return null;
+                let sumList = [];
+                if (data.Datapoints.length > 0) {
+                    data.Datapoints.forEach(data => {
+                        let sum = Number(data.Sum) / 60;
+                        sumList.push(Number(sum.toFixed(3)));
+                    });
+                    let val = sumList.reduce(function (previousValue, currentValue) {
+                        return previousValue + currentValue;
+                    });
+                    getProvisionReadCapacity(tableName, Number((val / sumList.length).toFixed(3)), data => {
+                        if (data) {
+                            resolve(data);
+                        } else {
+                            resolve(data);
+                        }
+                    });
+                } else {
+                    resolve();
+                }
             }
-        }
+        });
     });
 }
-// ------------------------------------------------------------------------------------
-function getConsumedReadCapacity(tableName) {
-    let params = {
-        EndTime: new Date(),
-        StartTime: new Date(+new Date() - (5 * 60 * 1000)),
-        Period: 60,
-        Dimensions: [
-            {
-                Name: 'TableName',
-                Value: tableName
-            },
-        ],
-        MetricName: 'ConsumedReadCapacityUnits',
-        Namespace: 'AWS/DynamoDB',
-        Statistics: ['Average']
-    };
-    cw.getMetricStatistics(params, function (err, data) {
-        if (err) {
-            console.log("Error", err);
-        } else {
-            if (data.Datapoints.length > 0) {
-                let res = data.Datapoints[data.Datapoints.length - 1].Average;
-                getProvisionedReadCapacity(tableName, res);
-            } else {
-                return null;
-            }
-        }
-    });
-}
-// ------------------------------------------------------------------------------------
-function getProvisionedWriteCapacity(tableName, Capacity) {
-    let params = {
-        TableName: tableName
-    };
-    dynamodb.describeTable(params, (err, data) => {
-        if (err) {
-            console.log("Error", err);
-        } else {
-            let wcu = data.Table.ProvisionedThroughput.WriteCapacityUnits;
-            let writeCapacity = Math.ceil(Number(Capacity));
-            console.log('getProvisionedWriteCapacity: ', tableName, writeCapacity, wcu);
-            if (writeCapacity > Number(wcu)) {
-                console.log('[INFO]', tableName, ': ProvisionedWriteCapacityUnits is ', wcu, 'ConsumedWriteCapacityUnits is ', writeCapacity);
-                postSlack(tableName, 'ProvisionedWriteapacityUnits');
-                return null;
-            } else {
-                return null;
-            }
-        }
-    });
-}
-// ------------------------------------------------------------------------------------
-function getProvisionedReadCapacity(tableName, Capacity) {
+
+
+function getProvisionReadCapacity(tableName, Capacity, callback) {
     let params = {
         TableName: tableName
     };
@@ -146,25 +125,114 @@ function getProvisionedReadCapacity(tableName, Capacity) {
         } else {
             let rcu = data.Table.ProvisionedThroughput.ReadCapacityUnits;
             let readCapacity = Math.ceil(Number(Capacity));
-            console.log('getProvisionedReadCapacity: ', tableName, readCapacity, rcu);
             if (readCapacity > Number(rcu)) {
-                console.log('[INFO]', tableName, ': ProvisionedReadCapacityUnits is ', rcu, 'ConsumedReadCapacityUnits is ', readCapacity);
-                postSlack(tableName, 'ProvisionedReadCapacityUnits');
-                return null;
+                callback({
+                    table: tableName,
+                    ProvisionedCapacityUnits: rcu,
+                    ConsumedCapacityUnits: Capacity,
+                    warn: true,
+                    units: 'Read'
+                });
             } else {
-                return null;
+                callback({
+                    table: tableName,
+                    ProvisionedCapacityUnits: rcu,
+                    ConsumedCapacityUnits: Capacity,
+                    warn: false,
+                    units: 'Read'
+                });
             }
         }
     });
 }
-// ------------------------------------------------------------------------------------
-function postSlack(table, CapacityUnits) {
+
+
+function getWriteCapacity(tableName) {
+    return new Promise((resolve, reject) => {
+        let params = {
+            EndTime: new Date(),
+            StartTime: new Date(+new Date() - (6 * 60 * 1000)),
+            Period: 60,
+            Dimensions: [
+                {
+                    Name: 'TableName',
+                    Value: tableName
+                },
+            ],
+            MetricName: 'ConsumedWriteCapacityUnits',
+            Namespace: 'AWS/DynamoDB',
+            Statistics: ['Sum']
+        };
+        cw.getMetricStatistics(params, function (err, data) {
+            if (err) {
+                console.log("Error", err);
+                reject(err);
+            } else {
+                let sumList = [];
+                if (data.Datapoints.length > 0) {
+                    data.Datapoints.forEach(data => {
+                        let sum = Number(data.Sum) / 60;
+                        sumList.push(Number(sum.toFixed(3)));
+                    });
+                    let val = sumList.reduce(function (previousValue, currentValue) {
+                        return previousValue + currentValue;
+                    });
+                    getProvisionWriteCapacity(tableName, Number((val / sumList.length).toFixed(3)), data => {
+                        if (data) {
+                            resolve(data);
+                        } else {
+                            resolve(data);
+                        }
+                    });
+                } else {
+                    resolve();
+                }
+            }
+        });
+    });
+}
+
+function getProvisionWriteCapacity(tableName, Capacity, callback) {
+    let params = {
+        TableName: tableName
+    };
+    dynamodb.describeTable(params, (err, data) => {
+        if (err) {
+            console.log("Error", err);
+        } else {
+            let wcu = data.Table.ProvisionedThroughput.WriteCapacityUnits;
+            let writeCapacity = Math.ceil(Number(Capacity));
+            if (writeCapacity > Number(wcu)) {
+                callback({
+                    table: tableName,
+                    ProvisionedCapacityUnits: wcu,
+                    ConsumedCapacityUnits: Capacity,
+                    warn: true,
+                    units: 'Write'
+                });
+            } else {
+                callback({
+                    table: tableName,
+                    ProvisionedCapacityUnits: wcu,
+                    ConsumedCapacityUnits: Capacity,
+                    warn: false,
+                    units: 'Write'
+                });
+            }
+        }
+    });
+}
+
+
+function postSlack(data) {
     let param = {
         token: process.env.token,
         channel: process.env.channel,
         username: process.env.username,
         icon_url: process.env.icon,
-        text: "[WARN] Throttling error occurred in DynamoDB. " + "\n" + "Please check　 the　" + table + "(" + CapacityUnits + ") table of DynamoDB."
+        text: "[WARN] Throttling error occurred in DynamoDB \n"
+        + "Table name: " + data.table + "\n" + "[" + data.units + "] " + data.ProvisionedCapacityUnits + "\n"
+        + "INFO" + data
     };
     slack.chat.postMessage(param, (err, data) => {
         if (err) {
@@ -175,3 +243,4 @@ function postSlack(table, CapacityUnits) {
         }
     });
 }
+// ------------------------------------------------------------------------------------
